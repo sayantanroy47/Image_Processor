@@ -5,17 +5,21 @@
 
 pub mod config;
 pub mod error;
+pub mod job_manager;
 pub mod logging;
 pub mod models;
 pub mod processing;
+pub mod progress;
 pub mod queue;
 pub mod utils;
 
 // Re-export commonly used types
 pub use config::*;
 pub use error::*;
+pub use job_manager::*;
 pub use logging::*;
 pub use models::*;
+pub use progress::*;
 pub use queue::*;
 
 /// Initialize the image processor core library

@@ -12,6 +12,7 @@ categories.workspace = true
 [dependencies]
 # Core async runtime
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 futures = { workspace = true }
 
 # Serialization

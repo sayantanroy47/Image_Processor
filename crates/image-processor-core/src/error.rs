@@ -3,10 +3,10 @@
 use std::path::PathBuf;
 
 /// Main error type for image processing operations
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
 pub enum ProcessingError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("IO error: {message}")]
+    Io { message: String },
     
     #[error("Image format not supported: {format}")]
     UnsupportedFormat { format: String },
@@ -38,21 +38,45 @@ pub enum ProcessingError {
     #[error("Operation cancelled")]
     Cancelled,
     
+    #[error("Operation cancelled: {message}")]
+    OperationCancelled { message: String },
+    
     #[error("Timeout occurred during operation")]
     Timeout,
     
-    #[error("Database error: {0}")]
-    Database(#[from] sqlx::Error),
+    #[error("Database error: {message}")]
+    Database { message: String },
     
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
+    #[error("Serialization error: {message}")]
+    Serialization { message: String },
 }
 
 impl ProcessingError {
+    /// Create an IO error from std::io::Error
+    pub fn from_io_error(error: std::io::Error) -> Self {
+        ProcessingError::Io {
+            message: error.to_string(),
+        }
+    }
+
+    /// Create a database error from sqlx::Error
+    pub fn from_database_error(error: sqlx::Error) -> Self {
+        ProcessingError::Database {
+            message: error.to_string(),
+        }
+    }
+
+    /// Create a serialization error from serde_json::Error
+    pub fn from_serialization_error(error: serde_json::Error) -> Self {
+        ProcessingError::Serialization {
+            message: error.to_string(),
+        }
+    }
+
     /// Get the error type as a string for categorization
     pub fn error_type(&self) -> &'static str {
         match self {
-            ProcessingError::Io(_) => "io_error",
+            ProcessingError::Io { .. } => "io_error",
             ProcessingError::UnsupportedFormat { .. } => "unsupported_format",
             ProcessingError::ProcessingFailed { .. } => "processing_failed",
             ProcessingError::OutOfMemory => "out_of_memory",
@@ -63,9 +87,10 @@ impl ProcessingError {
             ProcessingError::FileNotFound { .. } => "file_not_found",
             ProcessingError::InvalidInput { .. } => "invalid_input",
             ProcessingError::Cancelled => "cancelled",
+            ProcessingError::OperationCancelled { .. } => "operation_cancelled",
             ProcessingError::Timeout => "timeout",
-            ProcessingError::Database(_) => "database_error",
-            ProcessingError::Serialization(_) => "serialization_error",
+            ProcessingError::Database { .. } => "database_error",
+            ProcessingError::Serialization { .. } => "serialization_error",
         }
     }
     
