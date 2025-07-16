@@ -28,14 +28,11 @@ chrono = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 
 # Image processing libraries
-libvips = { workspace = true }
-opencv = { workspace = true }
 image = { workspace = true }
-
-# AI/ML for background removal
-onnxruntime = { workspace = true }
 
 # Database for metadata and settings
 sqlx = { workspace = true }

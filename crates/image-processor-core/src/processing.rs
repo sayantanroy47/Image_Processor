@@ -80,7 +80,7 @@ impl ProcessingOrchestrator {
     }
 
     /// Process a single job
-    #[instrument(skip(self, input), fields(job_id = %input.job_id))]
+    #[instrument(skip(self, input), fields(job_id = ?input.job_id))]
     pub async fn process_job(&self, input: ProcessingInput) -> Result<ProcessingOutput> {
         let job_id = input.job_id;
         
@@ -108,9 +108,9 @@ impl ProcessingOrchestrator {
         self.active_jobs.write().await.insert(job_id, job);
 
         info!("Starting job processing",
-              job_id = %job_id,
+              job_id = ?job_id,
               operations_count = input.operations.len(),
-              source_path = %input.source_path.display());
+              source_path = ?input.source_path.display());
 
         let result = self.execute_processing(input).await;
 

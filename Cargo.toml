@@ -32,12 +32,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 
 # Image processing
-libvips = "1.5"
-opencv = { version = "0.88", features = ["opencv-4"] }
 image = "0.24"
-
-# AI/ML
-onnxruntime = "0.0.14"
 
 # CLI
 clap = { version = "4.4", features = ["derive", "env"] }
@@ -79,12 +74,3 @@ opt-level = 0
 debug = true
 overflow-checks = true
 
-# Platform-specific optimizations
-[target.'cfg(target_os = "windows")'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "processthreadsapi"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-nix = "0.27"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-core-foundation = "0.9"

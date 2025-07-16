@@ -152,34 +152,39 @@ pub fn init_logging_with_config(config: LoggingConfig) -> Result<Option<WorkerGu
 }
 
 /// Create a console logging layer
-fn create_console_layer(structured: bool) -> impl Layer<impl Subscriber> {
+fn create_console_layer(structured: bool) -> Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync> {
     if structured {
-        fmt::layer()
-            .json()
-            .with_span_events(FmtSpan::CLOSE)
-            .with_current_span(true)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_target(true)
-            .with_file(true)
-            .with_line_number(true)
+        Box::new(
+            fmt::layer()
+                .json()
+                .with_span_events(FmtSpan::CLOSE)
+                .with_current_span(true)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_target(true)
+                .with_file(true)
+                .with_line_number(true)
+        )
     } else {
-        fmt::layer()
-            .pretty()
-            .with_span_events(FmtSpan::CLOSE)
-            .with_current_span(true)
-            .with_thread_ids(true)
-            .with_thread_names(true)
-            .with_target(true)
-            .with_file(true)
-            .with_line_number(true)
+        Box::new(
+            fmt::layer()
+                .pretty()
+                .with_span_events(FmtSpan::CLOSE)
+                .with_current_span(true)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_target(true)
+                .with_file(true)
+                .with_line_number(true)
+        )
     }
 }
 
 /// Create a file logging layer
 fn create_file_layer(
     path: &PathBuf,
-) -> Result<(impl Layer<impl Subscriber>, WorkerGuard)> {
+    _structured: bool,
+) -> Result<(Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>, WorkerGuard)> {
     // Ensure the parent directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ProcessingError::LoggingError {
@@ -196,16 +201,18 @@ fn create_file_layer(
 
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
-    let layer = fmt::layer()
-        .json()
-        .with_writer(non_blocking)
-        .with_span_events(FmtSpan::CLOSE)
-        .with_current_span(true)
-        .with_thread_ids(true)
-        .with_thread_names(true)
-        .with_target(true)
-        .with_file(true)
-        .with_line_number(true);
+    let layer = Box::new(
+        fmt::layer()
+            .json()
+            .with_writer(non_blocking)
+            .with_span_events(FmtSpan::CLOSE)
+            .with_current_span(true)
+            .with_thread_ids(true)
+            .with_thread_names(true)
+            .with_target(true)
+            .with_file(true)
+            .with_line_number(true)
+    );
 
     Ok((layer, guard))
 }

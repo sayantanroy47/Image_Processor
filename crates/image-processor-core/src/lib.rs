@@ -8,6 +8,7 @@ pub mod error;
 pub mod logging;
 pub mod models;
 pub mod processing;
+pub mod queue;
 pub mod utils;
 
 // Re-export commonly used types
@@ -15,9 +16,10 @@ pub use config::*;
 pub use error::*;
 pub use logging::*;
 pub use models::*;
+pub use queue::*;
 
 /// Initialize the image processor core library
-pub async fn init() -> Result<(), ProcessingError> {
+pub async fn init() -> Result<()> {
     // Initialize logging system
     logging::init_logging()?;
     
