@@ -34,6 +34,7 @@ tracing-appender = { workspace = true }
 
 # Image processing libraries
 image = { workspace = true }
+libvips = "1.6"
 
 # Database for metadata and settings
 sqlx = { workspace = true }

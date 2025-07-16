@@ -6,6 +6,7 @@
 pub mod config;
 pub mod database;
 pub mod error;
+pub mod format_converter;
 pub mod job_manager;
 pub mod logging;
 pub mod models;
@@ -18,6 +19,7 @@ pub mod utils;
 pub use config::*;
 pub use database::*;
 pub use error::*;
+pub use format_converter::*;
 pub use job_manager::*;
 pub use logging::*;
 pub use models::*;
