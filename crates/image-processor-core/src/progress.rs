@@ -48,7 +48,7 @@ pub struct ProgressUpdate {
 }
 
 /// Types of progress updates
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ProgressUpdateType {
     Started,
     OperationChanged,
@@ -573,5 +573,282 @@ mod tests {
         
         let result = tracker.complete_operation(job_id).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_progress_timing_accuracy() {
+        let tracker = ProgressTracker::new(100);
+        let job_id = Uuid::new_v4();
+        
+        let start_time = std::time::Instant::now();
+        tracker.start_job(job_id, 4, 1000).await.unwrap();
+        
+        // Simulate processing with known timing
+        for i in 0..4 {
+            sleep(TokioDuration::from_millis(50)).await;
+            tracker.update_bytes_processed(job_id, (i + 1) * 250).await.unwrap();
+            tracker.complete_operation(job_id).await.unwrap();
+        }
+        
+        let progress = tracker.get_progress(job_id).await.unwrap();
+        let elapsed = start_time.elapsed();
+        
+        // Verify progress is complete
+        assert_eq!(progress.operations_completed, 4);
+        assert_eq!(progress.bytes_processed, 1000);
+        
+        // Verify timing is reasonable (should be around 200ms + overhead)
+        assert!(elapsed >= Duration::from_millis(180));
+        assert!(elapsed <= Duration::from_millis(300));
+        
+        // Verify processing speed calculation
+        assert!(progress.processing_speed > 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_progress_updates() {
+        let tracker = Arc::new(ProgressTracker::new(100));
+        let mut handles = Vec::new();
+        
+        // Start multiple jobs concurrently
+        for i in 0..5 {
+            let tracker_clone = tracker.clone();
+            let handle = tokio::spawn(async move {
+                let job_id = Uuid::new_v4();
+                tracker_clone.start_job(job_id, 3, 300).await.unwrap();
+                
+                // Update progress concurrently
+                for j in 0..3 {
+                    sleep(TokioDuration::from_millis(10)).await;
+                    tracker_clone.update_bytes_processed(job_id, (j + 1) * 100).await.unwrap();
+                    tracker_clone.complete_operation(job_id).await.unwrap();
+                }
+                
+                tracker_clone.complete_job(job_id, CompletionStatus::Success).await.unwrap();
+                job_id
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all jobs to complete
+        let mut job_ids = Vec::new();
+        for handle in handles {
+            job_ids.push(handle.await.unwrap());
+        }
+        
+        // Verify all jobs completed successfully
+        let stats = tracker.get_statistics().await;
+        assert_eq!(stats.active_jobs, 0);
+        assert_eq!(stats.completed_jobs, 5);
+        
+        // Verify each job's history
+        for job_id in job_ids {
+            let history = tracker.get_history(job_id).await.unwrap();
+            assert!(matches!(history.final_status, CompletionStatus::Success));
+            assert!(history.total_duration > Duration::ZERO);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_progress_estimation_accuracy() {
+        let tracker = ProgressTracker::new(100);
+        let job_id = Uuid::new_v4();
+        
+        tracker.start_job(job_id, 10, 1000).await.unwrap();
+        
+        // Process first half with consistent timing
+        for i in 0..5 {
+            sleep(TokioDuration::from_millis(20)).await;
+            tracker.update_bytes_processed(job_id, (i + 1) * 100).await.unwrap();
+            tracker.complete_operation(job_id).await.unwrap();
+        }
+        
+        let progress = tracker.get_progress(job_id).await.unwrap();
+        
+        // Should have reasonable time estimation
+        if let Some(eta) = progress.estimated_time_remaining {
+            // Should estimate remaining time based on current speed
+            assert!(eta > Duration::from_millis(50));
+            assert!(eta < Duration::from_millis(200));
+        }
+        
+        // Verify progress calculation
+        let overall = progress.overall_progress();
+        assert!(overall >= 0.4 && overall <= 0.6); // Should be around 50%
+    }
+
+    #[tokio::test]
+    async fn test_progress_broadcast_reliability() {
+        let tracker = Arc::new(ProgressTracker::new(100));
+        let mut receiver = tracker.subscribe();
+        let job_id = Uuid::new_v4();
+        
+        // Start job and collect updates
+        let tracker_clone = tracker.clone();
+        let update_handle = tokio::spawn(async move {
+            tracker_clone.start_job(job_id, 3, 300).await.unwrap();
+            
+            for i in 0..3 {
+                sleep(TokioDuration::from_millis(10)).await;
+                tracker_clone.update_operation(job_id, format!("Operation {}", i + 1)).await.unwrap();
+                tracker_clone.update_bytes_processed(job_id, (i + 1) * 100).await.unwrap();
+                tracker_clone.complete_operation(job_id).await.unwrap();
+            }
+            
+            tracker_clone.complete_job(job_id, CompletionStatus::Success).await.unwrap();
+        });
+        
+        // Collect all progress updates
+        let mut updates = Vec::new();
+        let mut update_types = Vec::new();
+        
+        // Use timeout to avoid hanging if updates don't come
+        while updates.len() < 8 { // Expect: start + 3*(operation + progress + complete) + final
+            match tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await {
+                Ok(Ok(update)) => {
+                    update_types.push(update.update_type.clone());
+                    updates.push(update);
+                }
+                _ => break,
+            }
+        }
+        
+        update_handle.await.unwrap();
+        
+        // Verify we received the expected update types
+        assert!(!updates.is_empty());
+        assert!(update_types.contains(&ProgressUpdateType::Started));
+        assert!(update_types.contains(&ProgressUpdateType::Completed));
+        
+        // Verify all updates are for the correct job
+        for update in &updates {
+            assert_eq!(update.job_id, job_id);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_progress_memory_management() {
+        let tracker = ProgressTracker::new(3); // Small limit for testing
+        let mut job_ids = Vec::new();
+        
+        // Create more jobs than the history limit
+        for i in 0..5 {
+            let job_id = Uuid::new_v4();
+            job_ids.push(job_id);
+            
+            tracker.start_job(job_id, 1, 100).await.unwrap();
+            tracker.complete_operation(job_id).await.unwrap();
+            tracker.complete_job(job_id, CompletionStatus::Success).await.unwrap();
+            
+            // Small delay to ensure different timestamps
+            sleep(TokioDuration::from_millis(1)).await;
+        }
+        
+        let stats = tracker.get_statistics().await;
+        assert_eq!(stats.completed_jobs, 3); // Should be limited to max_history_entries
+        
+        // Verify oldest jobs were removed
+        let history = tracker.get_all_history().await;
+        assert_eq!(history.len(), 3);
+        
+        // Should contain the 3 most recent jobs
+        let recent_job_ids: Vec<_> = job_ids.iter().rev().take(3).collect();
+        for recent_id in recent_job_ids {
+            assert!(history.iter().any(|h| h.job_id == *recent_id));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_progress_edge_cases() {
+        let tracker = ProgressTracker::new(100);
+        let job_id = Uuid::new_v4();
+        
+        // Test job with zero operations
+        tracker.start_job(job_id, 0, 0).await.unwrap();
+        let progress = tracker.get_progress(job_id).await.unwrap();
+        assert_eq!(progress.overall_progress(), 0.0);
+        
+        // Complete job immediately
+        tracker.complete_job(job_id, CompletionStatus::Success).await.unwrap();
+        
+        // Test job with zero bytes
+        let job_id2 = Uuid::new_v4();
+        tracker.start_job(job_id2, 5, 0).await.unwrap();
+        
+        for _ in 0..5 {
+            tracker.complete_operation(job_id2).await.unwrap();
+        }
+        
+        let progress = tracker.get_progress(job_id2).await.unwrap();
+        assert_eq!(progress.overall_progress(), 1.0); // Should be 100% based on operations
+        
+        tracker.complete_job(job_id2, CompletionStatus::Success).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_progress_cancellation_handling() {
+        let tracker = ProgressTracker::new(100);
+        let job_id = Uuid::new_v4();
+        
+        tracker.start_job(job_id, 5, 500).await.unwrap();
+        
+        // Process partially
+        tracker.update_bytes_processed(job_id, 200).await.unwrap();
+        tracker.complete_operation(job_id).await.unwrap();
+        tracker.complete_operation(job_id).await.unwrap();
+        
+        let progress = tracker.get_progress(job_id).await.unwrap();
+        assert_eq!(progress.operations_completed, 2);
+        assert_eq!(progress.bytes_processed, 200);
+        
+        // Cancel the job
+        tracker.complete_job(job_id, CompletionStatus::Cancelled).await.unwrap();
+        
+        // Verify job is no longer active
+        assert!(tracker.get_progress(job_id).await.is_none());
+        
+        // Verify job is in history with cancelled status
+        let history = tracker.get_history(job_id).await.unwrap();
+        assert!(matches!(history.final_status, CompletionStatus::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn test_progress_statistics_accuracy() {
+        let tracker = Arc::new(ProgressTracker::new(100));
+        
+        // Start multiple jobs with different characteristics
+        let mut job_handles = Vec::new();
+        for i in 0..3 {
+            let tracker_clone = tracker.clone();
+            let handle = tokio::spawn(async move {
+                let job_id = Uuid::new_v4();
+                tracker_clone.start_job(job_id, 2, 200).await.unwrap();
+                
+                // Simulate different processing speeds
+                let delay = (i + 1) * 10;
+                sleep(TokioDuration::from_millis(delay)).await;
+                tracker_clone.update_bytes_processed(job_id, 100).await.unwrap();
+                tracker_clone.complete_operation(job_id).await.unwrap();
+                
+                sleep(TokioDuration::from_millis(delay)).await;
+                tracker_clone.update_bytes_processed(job_id, 200).await.unwrap();
+                tracker_clone.complete_operation(job_id).await.unwrap();
+                
+                tracker_clone.complete_job(job_id, CompletionStatus::Success).await.unwrap();
+                job_id
+            });
+            job_handles.push(handle);
+        }
+        
+        // Wait for all jobs to complete
+        for handle in job_handles {
+            handle.await.unwrap();
+        }
+        
+        let stats = tracker.get_statistics().await;
+        assert_eq!(stats.active_jobs, 0);
+        assert_eq!(stats.completed_jobs, 3);
+        assert!(stats.average_processing_speed >= 0.0);
+        assert!(stats.average_completion_time > Duration::ZERO);
     }
 }

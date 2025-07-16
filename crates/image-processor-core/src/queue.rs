@@ -449,6 +449,7 @@ mod tests {
     use super::*;
     use crate::models::{ProcessingOperation, ProcessingOptions};
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn create_test_input() -> ProcessingInput {
         ProcessingInput {
@@ -589,5 +590,270 @@ mod tests {
         
         let job = queue.get_job(job_id).await.unwrap();
         assert_eq!(job.progress, 0.5);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_job_processing() {
+        let queue = Arc::new(JobQueue::new(3));
+        let mut handles = Vec::new();
+        
+        // Submit 10 jobs concurrently
+        for i in 0..10 {
+            let queue_clone = queue.clone();
+            let handle = tokio::spawn(async move {
+                let mut input = create_test_input();
+                input.file_size = (i + 1) * 100; // Different sizes for identification
+                queue_clone.enqueue_job(input, JobPriority::Normal).await.unwrap()
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all jobs to be submitted
+        let mut job_ids = Vec::new();
+        for handle in handles {
+            job_ids.push(handle.await.unwrap());
+        }
+        
+        // Process jobs concurrently
+        let mut processing_handles = Vec::new();
+        for _ in 0..3 {
+            let queue_clone = queue.clone();
+            let handle = tokio::spawn(async move {
+                let mut processed_jobs = Vec::new();
+                while let Some(job) = queue_clone.dequeue_job().await {
+                    // Simulate processing time
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    processed_jobs.push(job.id);
+                    queue_clone.complete_job(job.id, None).await.unwrap();
+                }
+                processed_jobs
+            });
+            processing_handles.push(handle);
+        }
+        
+        // Wait for processing to complete
+        let mut all_processed = Vec::new();
+        for handle in processing_handles {
+            let mut processed = handle.await.unwrap();
+            all_processed.append(&mut processed);
+        }
+        
+        // Verify all jobs were processed
+        assert_eq!(all_processed.len(), 10);
+        
+        // Verify final stats
+        let stats = queue.get_stats().await;
+        assert_eq!(stats.pending_jobs, 0);
+        assert_eq!(stats.active_jobs, 0);
+        assert_eq!(stats.completed_jobs, 10);
+    }
+
+    #[tokio::test]
+    async fn test_job_cancellation_race_conditions() {
+        let queue = Arc::new(JobQueue::new(2));
+        let mut job_ids = Vec::new();
+        
+        // Submit multiple jobs
+        for _ in 0..5 {
+            let input = create_test_input();
+            let job_id = queue.enqueue_job(input, JobPriority::Normal).await.unwrap();
+            job_ids.push(job_id);
+        }
+        
+        // Start processing some jobs
+        let _job1 = queue.dequeue_job().await.unwrap();
+        let _job2 = queue.dequeue_job().await.unwrap();
+        
+        // Cancel jobs concurrently
+        let mut cancel_handles = Vec::new();
+        for job_id in job_ids.iter().take(3) {
+            let queue_clone = queue.clone();
+            let job_id = *job_id;
+            let handle = tokio::spawn(async move {
+                queue_clone.cancel_job(job_id).await
+            });
+            cancel_handles.push(handle);
+        }
+        
+        // Wait for cancellations
+        for handle in cancel_handles {
+            let _ = handle.await.unwrap(); // Some may fail if job is already running
+        }
+        
+        // Verify cancelled jobs are in completed state
+        let stats = queue.get_stats().await;
+        assert!(stats.completed_jobs > 0);
+    }
+
+    #[tokio::test]
+    async fn test_queue_stress_test() {
+        let queue = Arc::new(JobQueue::new(5));
+        let num_jobs = 100;
+        let mut handles = Vec::new();
+        
+        // Submit jobs from multiple threads
+        for i in 0..num_jobs {
+            let queue_clone = queue.clone();
+            let handle = tokio::spawn(async move {
+                let mut input = create_test_input();
+                input.file_size = i as u64;
+                let priority = match i % 4 {
+                    0 => JobPriority::Low,
+                    1 => JobPriority::Normal,
+                    2 => JobPriority::High,
+                    _ => JobPriority::Critical,
+                };
+                queue_clone.enqueue_job(input, priority).await.unwrap()
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all submissions
+        let mut job_ids = Vec::new();
+        for handle in handles {
+            job_ids.push(handle.await.unwrap());
+        }
+        
+        // Process all jobs
+        let mut processed_count = 0;
+        while processed_count < num_jobs {
+            if let Some(job) = queue.dequeue_job().await {
+                // Simulate variable processing time
+                let delay = (job.input.file_size % 5) + 1;
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                
+                // Randomly fail some jobs
+                let error = if job.input.file_size % 10 == 0 {
+                    Some(ProcessingError::ProcessingFailed {
+                        message: "Simulated failure".to_string(),
+                    })
+                } else {
+                    None
+                };
+                
+                queue.complete_job(job.id, error).await.unwrap();
+                processed_count += 1;
+            }
+        }
+        
+        // Verify final state
+        let stats = queue.get_stats().await;
+        assert_eq!(stats.pending_jobs, 0);
+        assert_eq!(stats.active_jobs, 0);
+        assert_eq!(stats.completed_jobs, num_jobs);
+    }
+
+    #[tokio::test]
+    async fn test_priority_queue_ordering_under_load() {
+        let queue = JobQueue::new(1); // Single worker to ensure ordering
+        let mut job_ids = Vec::new();
+        
+        // Submit jobs in mixed priority order
+        let priorities = vec![
+            JobPriority::Low,
+            JobPriority::Critical,
+            JobPriority::Normal,
+            JobPriority::High,
+            JobPriority::Low,
+            JobPriority::Critical,
+        ];
+        
+        for priority in priorities {
+            let input = create_test_input();
+            let job_id = queue.enqueue_job(input, priority).await.unwrap();
+            job_ids.push((job_id, priority));
+        }
+        
+        // Process jobs and verify they come out in priority order
+        let mut processed_priorities = Vec::new();
+        while let Some(job) = queue.dequeue_job().await {
+            processed_priorities.push(job.priority);
+            queue.complete_job(job.id, None).await.unwrap();
+        }
+        
+        // Verify Critical jobs came first, then High, then Normal, then Low
+        let mut critical_indices = Vec::new();
+        let mut high_indices = Vec::new();
+        let mut normal_indices = Vec::new();
+        let mut low_indices = Vec::new();
+        
+        for (i, priority) in processed_priorities.iter().enumerate() {
+            match priority {
+                JobPriority::Critical => critical_indices.push(i),
+                JobPriority::High => high_indices.push(i),
+                JobPriority::Normal => normal_indices.push(i),
+                JobPriority::Low => low_indices.push(i),
+            }
+        }
+        
+        // All critical jobs should come before high jobs
+        if !critical_indices.is_empty() && !high_indices.is_empty() {
+            assert!(critical_indices.iter().max().unwrap() < high_indices.iter().min().unwrap());
+        }
+        
+        // All high jobs should come before normal jobs
+        if !high_indices.is_empty() && !normal_indices.is_empty() {
+            assert!(high_indices.iter().max().unwrap() < normal_indices.iter().min().unwrap());
+        }
+        
+        // All normal jobs should come before low jobs
+        if !normal_indices.is_empty() && !low_indices.is_empty() {
+            assert!(normal_indices.iter().max().unwrap() < low_indices.iter().min().unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_job_status_transitions() {
+        let queue = JobQueue::new(2);
+        let input = create_test_input();
+        
+        // Test complete lifecycle
+        let job_id = queue.enqueue_job(input, JobPriority::Normal).await.unwrap();
+        assert_eq!(queue.get_job_status(job_id).await, Some(JobStatus::Pending));
+        
+        let job = queue.dequeue_job().await.unwrap();
+        assert_eq!(job.status, JobStatus::Running);
+        assert_eq!(queue.get_job_status(job_id).await, Some(JobStatus::Running));
+        
+        queue.complete_job(job_id, None).await.unwrap();
+        assert_eq!(queue.get_job_status(job_id).await, Some(JobStatus::Completed));
+        
+        // Test failure case
+        let input2 = create_test_input();
+        let job_id2 = queue.enqueue_job(input2, JobPriority::Normal).await.unwrap();
+        let job2 = queue.dequeue_job().await.unwrap();
+        
+        let error = ProcessingError::ProcessingFailed {
+            message: "Test error".to_string(),
+        };
+        queue.complete_job(job_id2, Some(error)).await.unwrap();
+        assert_eq!(queue.get_job_status(job_id2).await, Some(JobStatus::Failed));
+    }
+
+    #[tokio::test]
+    async fn test_queue_capacity_limits() {
+        let queue = JobQueue::new(2);
+        let mut job_ids = Vec::new();
+        
+        // Fill up the queue beyond capacity
+        for _ in 0..5 {
+            let input = create_test_input();
+            let job_id = queue.enqueue_job(input, JobPriority::Normal).await.unwrap();
+            job_ids.push(job_id);
+        }
+        
+        // Should be able to dequeue up to max_concurrent_jobs
+        let job1 = queue.dequeue_job().await.unwrap();
+        let job2 = queue.dequeue_job().await.unwrap();
+        
+        // Third dequeue should return None due to capacity limit
+        assert!(queue.dequeue_job().await.is_none());
+        
+        // Complete one job to free up capacity
+        queue.complete_job(job1.id, None).await.unwrap();
+        
+        // Now should be able to dequeue another job
+        let job3 = queue.dequeue_job().await.unwrap();
+        assert!(job3.id != job1.id && job3.id != job2.id);
     }
 }

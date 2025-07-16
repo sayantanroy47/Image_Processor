@@ -1002,4 +1002,342 @@ mod tests {
         assert_eq!(loaded_jobs[0].checkpoints.len(), 1);
         assert_eq!(loaded_jobs[0].checkpoints[0].operation_name, "Convert");
     }
+
+    #[tokio::test]
+    async fn test_concurrent_job_manager_operations() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = JobManagerConfig {
+            max_concurrent_jobs: 3,
+            persistence_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let manager = Arc::new(JobManager::new(config).await.unwrap());
+        let mut handles = Vec::new();
+
+        // Submit jobs concurrently from multiple tasks
+        for i in 0..10 {
+            let manager_clone = manager.clone();
+            let handle = tokio::spawn(async move {
+                let mut input = create_test_input();
+                input.file_size = (i + 1) * 100;
+                let priority = match i % 3 {
+                    0 => JobPriority::Low,
+                    1 => JobPriority::Normal,
+                    _ => JobPriority::High,
+                };
+                manager_clone.submit_job(input, priority).await.unwrap()
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all submissions
+        let mut job_ids = Vec::new();
+        for handle in handles {
+            job_ids.push(handle.await.unwrap());
+        }
+
+        // Verify all jobs were submitted
+        assert_eq!(job_ids.len(), 10);
+
+        // Check queue stats
+        let stats = manager.get_queue_stats().await;
+        assert_eq!(stats.pending_jobs + stats.active_jobs + stats.completed_jobs, 10);
+
+        // Cancel some jobs concurrently
+        let mut cancel_handles = Vec::new();
+        for job_id in job_ids.iter().take(3) {
+            let manager_clone = manager.clone();
+            let job_id = *job_id;
+            let handle = tokio::spawn(async move {
+                manager_clone.cancel_job(job_id).await
+            });
+            cancel_handles.push(handle);
+        }
+
+        // Wait for cancellations
+        for handle in cancel_handles {
+            let _ = handle.await.unwrap();
+        }
+
+        // Verify some jobs were cancelled
+        let mut cancelled_count = 0;
+        for job_id in &job_ids {
+            if let Some(status) = manager.get_job_status(*job_id).await {
+                if status == JobStatus::Cancelled {
+                    cancelled_count += 1;
+                }
+            }
+        }
+        assert!(cancelled_count > 0);
+    }
+
+    #[tokio::test]
+    async fn test_job_manager_error_handling() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = JobManagerConfig {
+            persistence_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let manager = JobManager::new(config).await.unwrap();
+
+        // Test cancelling non-existent job
+        let fake_job_id = Uuid::new_v4();
+        let result = manager.cancel_job(fake_job_id).await;
+        assert!(result.is_ok()); // Should not error, just log warning
+
+        // Test getting status of non-existent job
+        let status = manager.get_job_status(fake_job_id).await;
+        assert!(status.is_none());
+
+        // Test getting progress of non-existent job
+        let progress = manager.get_job_progress(fake_job_id).await;
+        assert!(progress.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_job_manager_persistence_recovery() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = JobManagerConfig {
+            persistence_enabled: true,
+            persistence_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        // Create first manager and submit jobs
+        {
+            let manager = JobManager::new(config.clone()).await.unwrap();
+            
+            for i in 0..3 {
+                let mut input = create_test_input();
+                input.file_size = (i + 1) * 100;
+                manager.submit_job(input, JobPriority::Normal).await.unwrap();
+            }
+        }
+
+        // Create second manager (simulating restart) and verify recovery
+        let manager2 = JobManager::new(config).await.unwrap();
+        
+        // Give some time for recovery to complete
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        
+        let stats = manager2.get_queue_stats().await;
+        // Jobs should be recovered (exact count may vary due to timing)
+        assert!(stats.pending_jobs + stats.active_jobs + stats.completed_jobs > 0);
+    }
+
+    #[tokio::test]
+    async fn test_job_manager_retry_mechanism() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = JobManagerConfig {
+            persistence_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let manager = JobManager::new(config).await.unwrap();
+        
+        // Test retry configuration
+        let retry_config = &manager.retry_config;
+        assert_eq!(retry_config.max_retries, 3);
+        assert!(retry_config.retry_on_errors.contains(&RetryableError::IoError));
+        assert!(retry_config.retry_on_errors.contains(&RetryableError::HardwareAccelerationFailure));
+
+        // Test retry delay calculation
+        let delay1 = manager.calculate_retry_delay(1);
+        let delay2 = manager.calculate_retry_delay(2);
+        let delay3 = manager.calculate_retry_delay(3);
+
+        assert!(delay2 > delay1);
+        assert!(delay3 > delay2);
+        assert!(delay3 <= retry_config.max_delay);
+    }
+
+    #[tokio::test]
+    async fn test_job_manager_status_updates() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = JobManagerConfig {
+            persistence_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let manager = JobManager::new(config).await.unwrap();
+        let mut receiver = manager.subscribe_to_updates();
+
+        // Submit a job and listen for updates
+        let input = create_test_input();
+        let job_id = manager.submit_job(input, JobPriority::Normal).await.unwrap();
+
+        // Should receive status updates
+        let mut updates = Vec::new();
+        let timeout_duration = Duration::from_millis(500);
+        
+        while updates.len() < 2 {
+            match tokio::time::timeout(timeout_duration, receiver.recv()).await {
+                Ok(Ok(update)) => {
+                    if update.job_id == job_id {
+                        updates.push(update);
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        // Should have received at least one update
+        assert!(!updates.is_empty());
+        
+        // Verify updates are for the correct job
+        for update in &updates {
+            assert_eq!(update.job_id, job_id);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_job_manager_shutdown() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = JobManagerConfig {
+            persistence_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let manager = JobManager::new(config).await.unwrap();
+        
+        // Submit some jobs
+        for i in 0..3 {
+            let mut input = create_test_input();
+            input.file_size = (i + 1) * 100;
+            manager.submit_job(input, JobPriority::Normal).await.unwrap();
+        }
+
+        // Start the manager
+        manager.start().await.unwrap();
+
+        // Give it some time to process
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Shutdown should complete without hanging
+        let shutdown_result = tokio::time::timeout(
+            Duration::from_secs(5),
+            manager.shutdown()
+        ).await;
+
+        assert!(shutdown_result.is_ok());
+        assert!(shutdown_result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_job_manager_integration_with_progress_tracker() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = JobManagerConfig {
+            persistence_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let manager = JobManager::new(config).await.unwrap();
+        
+        // Submit a job
+        let input = create_test_input();
+        let job_id = manager.submit_job(input, JobPriority::Normal).await.unwrap();
+
+        // Should be able to get progress immediately after submission
+        let progress = manager.get_job_progress(job_id).await;
+        assert!(progress.is_some());
+
+        let progress = progress.unwrap();
+        assert_eq!(progress.job_id, job_id);
+        assert_eq!(progress.operations_completed, 0);
+        assert!(progress.total_operations > 0);
+    }
+
+    #[tokio::test]
+    async fn test_job_manager_stress_test() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = JobManagerConfig {
+            max_concurrent_jobs: 5,
+            persistence_path: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let manager = Arc::new(JobManager::new(config).await.unwrap());
+        let num_jobs: usize = 50;
+        let mut handles = Vec::new();
+
+        // Submit many jobs concurrently
+        for i in 0..num_jobs {
+            let manager_clone = manager.clone();
+            let handle = tokio::spawn(async move {
+                let mut input = create_test_input();
+                input.file_size = ((i + 1) * 10) as u64;
+                let priority = match i % 4 {
+                    0 => JobPriority::Low,
+                    1 => JobPriority::Normal,
+                    2 => JobPriority::High,
+                    _ => JobPriority::Critical,
+                };
+                manager_clone.submit_job(input, priority).await.unwrap()
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all submissions
+        let mut job_ids = Vec::new();
+        for handle in handles {
+            job_ids.push(handle.await.unwrap());
+        }
+
+        assert_eq!(job_ids.len(), num_jobs);
+
+        // Verify queue stats
+        let stats = manager.get_queue_stats().await;
+        assert_eq!(stats.pending_jobs + stats.active_jobs + stats.completed_jobs, num_jobs);
+
+        // Cancel some jobs randomly
+        let mut cancel_handles = Vec::new();
+        for job_id in job_ids.iter().step_by(5) {
+            let manager_clone = manager.clone();
+            let job_id = *job_id;
+            let handle = tokio::spawn(async move {
+                manager_clone.cancel_job(job_id).await
+            });
+            cancel_handles.push(handle);
+        }
+
+        // Wait for cancellations
+        for handle in cancel_handles {
+            let _ = handle.await.unwrap();
+        }
+
+        // Verify system is still stable
+        let final_stats = manager.get_queue_stats().await;
+        assert_eq!(final_stats.pending_jobs + final_stats.active_jobs + final_stats.completed_jobs, num_jobs);
+    }
+
+    #[tokio::test]
+    async fn test_job_manager_persistence_edge_cases() {
+        let temp_dir = TempDir::new().unwrap();
+        let persistence = JobPersistence::new(temp_dir.path()).await.unwrap();
+
+        // Test loading from empty directory
+        let jobs = persistence.load_all_jobs().await.unwrap();
+        assert!(jobs.is_empty());
+
+        // Test removing non-existent job
+        let fake_job_id = Uuid::new_v4();
+        let result = persistence.remove_job(fake_job_id).await;
+        assert!(result.is_ok()); // Should not error
+
+        // Test updating retry count for non-existent job
+        let result = persistence.update_retry_count(fake_job_id, 1).await;
+        assert!(result.is_ok()); // Should not error
+
+        // Test adding checkpoint for non-existent job
+        let checkpoint = JobCheckpoint {
+            operation_index: 0,
+            operation_name: "Test".to_string(),
+            completed_at: Utc::now(),
+            intermediate_files: Vec::new(),
+        };
+        let result = persistence.add_checkpoint(fake_job_id, checkpoint).await;
+        assert!(result.is_ok()); // Should not error
+    }
 }
