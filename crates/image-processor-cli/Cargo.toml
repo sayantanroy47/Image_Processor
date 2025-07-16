@@ -1,0 +1,50 @@
+[package]
+name = "image-processor-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line interface for image processing"
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "image-processor"
+path = "src/main.rs"
+
+[dependencies]
+# Core processing engine
+image-processor-core = { path = "../image-processor-core" }
+
+# CLI framework
+clap = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+
+# Configuration
+config = { workspace = true }
+dirs = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.8"
+assert_cmd = "2.0"
+predicates = "3.0"

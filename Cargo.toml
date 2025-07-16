@@ -1,0 +1,90 @@
+[workspace]
+members = [
+    "crates/image-processor-core",
+    "crates/image-processor-cli",
+    "crates/image-processor-gui"
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Image Processor Team"]
+license = "MIT"
+repository = "https://github.com/your-org/image-processor"
+description = "High-performance cross-platform image processing application"
+keywords = ["image", "processing", "conversion", "watermark", "batch"]
+categories = ["multimedia::images", "command-line-utilities"]
+
+[workspace.dependencies]
+# Core dependencies
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+
+# Image processing
+libvips = "1.5"
+opencv = { version = "0.88", features = ["opencv-4"] }
+image = "0.24"
+
+# AI/ML
+onnxruntime = "0.0.14"
+
+# CLI
+clap = { version = "4.4", features = ["derive", "env"] }
+
+# GUI (Tauri)
+tauri = { version = "1.5", features = ["api-all"] }
+tauri-build = { version = "1.5", features = [] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
+
+# Async and concurrency
+futures = "0.3"
+rayon = "1.8"
+
+# Configuration
+config = "0.13"
+dirs = "5.0"
+toml = "0.8"
+
+# Cross-platform
+which = "4.4"
+
+# System info
+num_cpus = "1.16"
+
+# Async traits
+async-trait = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
+overflow-checks = true
+
+# Platform-specific optimizations
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "processthreadsapi"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = "0.27"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.9"
