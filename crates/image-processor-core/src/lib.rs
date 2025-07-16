@@ -4,6 +4,7 @@
 //! format conversion, watermarking, metadata handling, and batch processing.
 
 pub mod config;
+pub mod database;
 pub mod error;
 pub mod job_manager;
 pub mod logging;
@@ -15,6 +16,7 @@ pub mod utils;
 
 // Re-export commonly used types
 pub use config::*;
+pub use database::*;
 pub use error::*;
 pub use job_manager::*;
 pub use logging::*;
