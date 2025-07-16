@@ -9,15 +9,25 @@ pub fn init_logging() -> Result<()> {
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    tracing_subscriber::registry()
+    match tracing_subscriber::registry()
         .with(env_filter)
         .with(tracing_subscriber::fmt::layer())
         .try_init()
-        .map_err(|e| ProcessingError::LoggingError {
-            message: format!("Failed to initialize logging: {}", e),
-        })?;
-
-    Ok(())
+    {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Check if the error is because logging is already initialized
+            let error_msg = e.to_string();
+            if error_msg.contains("a global default trace dispatcher has already been set") {
+                // Logging is already initialized, which is fine
+                Ok(())
+            } else {
+                Err(ProcessingError::LoggingError {
+                    message: format!("Failed to initialize logging: {}", e),
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]

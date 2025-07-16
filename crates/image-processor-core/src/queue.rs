@@ -234,11 +234,11 @@ impl JobQueue {
         {
             let mut pending = self.pending_jobs.lock().await;
             let mut temp_heap = BinaryHeap::new();
-            let mut found = false;
+            let mut found_job: Option<ProcessingJob> = None;
 
             while let Some(queued_job) = pending.pop() {
                 if queued_job.job.id == job_id {
-                    found = true;
+                    found_job = Some(queued_job.job);
                     break;
                 } else {
                     temp_heap.push(queued_job);
@@ -248,7 +248,16 @@ impl JobQueue {
             // Restore the heap without the cancelled job
             *pending = temp_heap;
 
-            if found {
+            if let Some(mut cancelled_job) = found_job {
+                cancelled_job.status = JobStatus::Cancelled;
+                cancelled_job.completed_at = Some(Utc::now());
+
+                // Move to completed jobs
+                {
+                    let mut completed = self.completed_jobs.write().await;
+                    completed.insert(job_id, cancelled_job);
+                }
+
                 let update = JobStatusUpdate {
                     job_id,
                     old_status: JobStatus::Pending,
