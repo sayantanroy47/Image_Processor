@@ -837,6 +837,10 @@ async fn test_watermark_operation_handling() -> Result<()> {
             opacity: 0.7,
             scale: 0.1,
             blend_mode: crate::models::BlendMode::Normal,
+            scaling_options: crate::models::WatermarkScalingOptions::default(),
+            alignment: crate::models::WatermarkAlignment::default(),
+            offset: crate::models::WatermarkOffset::default(),
+            visual_effects: crate::models::WatermarkVisualEffects::default(),
         },
     };
     assert!(watermark_engine.can_handle_operation(&watermark_operation));

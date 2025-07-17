@@ -125,10 +125,214 @@ pub struct WatermarkConfig {
     pub opacity: f32,
     pub scale: f32,
     pub blend_mode: BlendMode,
+    pub scaling_options: WatermarkScalingOptions,
+    pub alignment: WatermarkAlignment,
+    pub offset: WatermarkOffset,
+    pub visual_effects: WatermarkVisualEffects,
+}
+
+/// Watermark scaling options
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatermarkScalingOptions {
+    pub preserve_aspect_ratio: bool,
+    pub max_width_percent: Option<f32>,  // Maximum width as percentage of base image
+    pub max_height_percent: Option<f32>, // Maximum height as percentage of base image
+    pub min_size: Option<(u32, u32)>,    // Minimum size in pixels
+    pub max_size: Option<(u32, u32)>,    // Maximum size in pixels
+}
+
+impl Default for WatermarkScalingOptions {
+    fn default() -> Self {
+        Self {
+            preserve_aspect_ratio: true,
+            max_width_percent: Some(0.3), // 30% of base image width
+            max_height_percent: Some(0.3), // 30% of base image height
+            min_size: Some((10, 10)),
+            max_size: None,
+        }
+    }
+}
+
+/// Watermark alignment options
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum WatermarkAlignment {
+    /// Align to the edge/corner exactly
+    Edge,
+    /// Align with padding from edge
+    Padded { padding: u32 },
+    /// Center alignment within the position area
+    Centered,
+    /// Custom alignment with specific offsets
+    Custom { horizontal: HorizontalAlign, vertical: VerticalAlign },
+}
+
+impl Default for WatermarkAlignment {
+    fn default() -> Self {
+        WatermarkAlignment::Padded { padding: 10 }
+    }
+}
+
+/// Horizontal alignment options
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum HorizontalAlign {
+    Left,
+    Center,
+    Right,
+}
+
+/// Vertical alignment options
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum VerticalAlign {
+    Top,
+    Middle,
+    Bottom,
+}
+
+/// Watermark offset for fine-tuning position
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct WatermarkOffset {
+    pub x: i32, // Offset in pixels (can be negative)
+    pub y: i32, // Offset in pixels (can be negative)
+}
+
+impl Default for WatermarkOffset {
+    fn default() -> Self {
+        Self { x: 0, y: 0 }
+    }
+}
+
+/// RGBA color representation
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl Color {
+    /// Create a new color
+    pub fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+    
+    /// Create a white color
+    pub fn white() -> Self {
+        Self::new(255, 255, 255, 255)
+    }
+    
+    /// Create a black color
+    pub fn black() -> Self {
+        Self::new(0, 0, 0, 255)
+    }
+    
+    /// Create a transparent color
+    pub fn transparent() -> Self {
+        Self::new(0, 0, 0, 0)
+    }
+    
+    /// Convert to image::Rgba
+    pub fn to_rgba(&self) -> image::Rgba<u8> {
+        image::Rgba([self.r, self.g, self.b, self.a])
+    }
+}
+
+/// Visual effects for watermarks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatermarkVisualEffects {
+    pub shadow: Option<WatermarkShadow>,
+    pub outline: Option<WatermarkOutline>,
+    pub glow: Option<WatermarkGlow>,
+}
+
+impl Default for WatermarkVisualEffects {
+    fn default() -> Self {
+        Self {
+            shadow: None,
+            outline: None,
+            glow: None,
+        }
+    }
+}
+
+/// Shadow effect for watermarks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatermarkShadow {
+    pub color: Color,
+    pub offset_x: i32,
+    pub offset_y: i32,
+    pub blur_radius: f32,
+    pub opacity: f32,
+}
+
+impl Default for WatermarkShadow {
+    fn default() -> Self {
+        Self {
+            color: Color::new(0, 0, 0, 128), // Semi-transparent black
+            offset_x: 2,
+            offset_y: 2,
+            blur_radius: 4.0,
+            opacity: 0.5,
+        }
+    }
+}
+
+/// Outline effect for watermarks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatermarkOutline {
+    pub color: Color,
+    pub width: f32,
+    pub opacity: f32,
+}
+
+impl Default for WatermarkOutline {
+    fn default() -> Self {
+        Self {
+            color: Color::white(),
+            width: 1.0,
+            opacity: 1.0,
+        }
+    }
+}
+
+/// Glow effect for watermarks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatermarkGlow {
+    pub color: Color,
+    pub radius: f32,
+    pub intensity: f32,
+    pub opacity: f32,
+}
+
+impl Default for WatermarkGlow {
+    fn default() -> Self {
+        Self {
+            color: Color::white(),
+            radius: 5.0,
+            intensity: 1.0,
+            opacity: 0.8,
+        }
+    }
+}
+
+impl Default for WatermarkConfig {
+    fn default() -> Self {
+        Self {
+            watermark_path: PathBuf::new(),
+            positions: vec![WatermarkPosition::BottomRight],
+            opacity: 0.8,
+            scale: 0.2,
+            blend_mode: BlendMode::default(),
+            scaling_options: WatermarkScalingOptions::default(),
+            alignment: WatermarkAlignment::default(),
+            offset: WatermarkOffset::default(),
+            visual_effects: WatermarkVisualEffects::default(),
+        }
+    }
 }
 
 /// Watermark positioning options
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum WatermarkPosition {
     TopLeft,
     TopCenter,
@@ -151,6 +355,12 @@ pub enum BlendMode {
     Overlay,
     SoftLight,
     HardLight,
+    ColorDodge,
+    ColorBurn,
+    Darken,
+    Lighten,
+    Difference,
+    Exclusion,
 }
 
 impl Default for BlendMode {
@@ -299,32 +509,7 @@ pub enum GradientDirection {
     Diagonal,
 }
 
-/// Color representation
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Color {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-    pub a: u8,
-}
 
-impl Color {
-    pub fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self { r, g, b, a }
-    }
-
-    pub fn rgb(r: u8, g: u8, b: u8) -> Self {
-        Self::new(r, g, b, 255)
-    }
-
-    pub fn black() -> Self {
-        Self::rgb(0, 0, 0)
-    }
-
-    pub fn white() -> Self {
-        Self::rgb(255, 255, 255)
-    }
-}
 
 /// Collage layout configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -533,7 +718,7 @@ mod tests {
 
     #[test]
     fn test_color_creation() {
-        let color = Color::rgb(255, 128, 64);
+        let color = Color::new(255, 128, 64, 255);
         assert_eq!(color.r, 255);
         assert_eq!(color.g, 128);
         assert_eq!(color.b, 64);
