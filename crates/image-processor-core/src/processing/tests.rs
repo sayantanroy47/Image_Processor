@@ -759,6 +759,115 @@ async fn test_error_handling_invalid_files() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_watermark_engine_registration() -> Result<()> {
+    // Create a new orchestrator
+    let mut orchestrator = ProcessingOrchestrator::new();
+    
+    // Verify no processors are registered initially
+    assert_eq!(orchestrator.get_registered_processors().len(), 0);
+    
+    // Register the WatermarkEngine
+    orchestrator.register_watermark_engine()?;
+    
+    // Verify the processor was registered
+    let registered_processors = orchestrator.get_registered_processors();
+    assert_eq!(registered_processors.len(), 1);
+    assert!(registered_processors.contains(&ProcessorType::WatermarkEngine));
+    
+    // Verify capabilities
+    let capabilities = orchestrator.get_processor_capabilities(&ProcessorType::WatermarkEngine);
+    assert!(capabilities.is_some());
+    
+    let caps = capabilities.unwrap();
+    assert!(!caps.input_formats.is_empty());
+    assert!(!caps.output_formats.is_empty());
+    assert!(caps.operations.contains(&crate::processing::ProcessorOperation::Watermark));
+    assert!(!caps.streaming_support); // Watermark engine doesn't support streaming
+    assert!(caps.batch_optimized);
+    
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_watermark_engine_capabilities() -> Result<()> {
+    let watermark_engine = crate::watermark_engine::WatermarkEngine::new();
+    let capabilities = watermark_engine.get_capabilities();
+    
+    // Verify basic capabilities
+    assert!(!capabilities.input_formats.is_empty());
+    assert!(!capabilities.output_formats.is_empty());
+    assert!(capabilities.operations.contains(&crate::processing::ProcessorOperation::Watermark));
+    
+    // Verify common formats are supported
+    assert!(capabilities.input_formats.contains(&ImageFormat::Jpeg));
+    assert!(capabilities.input_formats.contains(&ImageFormat::Png));
+    assert!(capabilities.output_formats.contains(&ImageFormat::Jpeg));
+    assert!(capabilities.output_formats.contains(&ImageFormat::Png));
+    
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_watermark_engine_metadata() -> Result<()> {
+    let watermark_engine = crate::watermark_engine::WatermarkEngine::new();
+    let metadata = watermark_engine.get_metadata();
+    
+    // Verify metadata is properly set
+    assert_eq!(metadata.name, "Watermark Engine");
+    assert_eq!(metadata.version, "1.0.0");
+    assert!(!metadata.description.is_empty());
+    assert!(!metadata.author.is_empty());
+    
+    // Verify performance profile
+    assert!(metadata.performance_profile.speed_factor > 0.0);
+    assert!(metadata.performance_profile.parallel_friendly);
+    
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_watermark_operation_handling() -> Result<()> {
+    let watermark_engine = crate::watermark_engine::WatermarkEngine::new();
+    
+    // Test operation handling
+    let watermark_operation = ProcessingOperation::Watermark {
+        config: crate::models::WatermarkConfig {
+            watermark_path: std::path::PathBuf::from("test_watermark.png"),
+            positions: vec![crate::models::WatermarkPosition::BottomRight],
+            opacity: 0.7,
+            scale: 0.1,
+            blend_mode: crate::models::BlendMode::Normal,
+        },
+    };
+    assert!(watermark_engine.can_handle_operation(&watermark_operation));
+    
+    // Test unsupported operation
+    let convert_operation = ProcessingOperation::Convert {
+        format: ImageFormat::Png,
+        quality: Some(85),
+    };
+    assert!(!watermark_engine.can_handle_operation(&convert_operation));
+    
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orchestrator_auto_discovery_with_watermark() -> Result<()> {
+    let mut orchestrator = ProcessingOrchestrator::new();
+    
+    // Test auto-discovery
+    let registered_count = orchestrator.auto_discover_processors().await?;
+    assert_eq!(registered_count, 2); // Should find FormatConverter and WatermarkEngine
+    
+    // Verify both processors were registered
+    let registered_processors = orchestrator.get_registered_processors();
+    assert!(registered_processors.contains(&ProcessorType::FormatConverter));
+    assert!(registered_processors.contains(&ProcessorType::WatermarkEngine));
+    
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_webp_lossless_vs_lossy() -> Result<()> {
     use image::{ImageBuffer, Rgb};
     

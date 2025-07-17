@@ -195,6 +195,14 @@ impl ProcessingOrchestrator {
         Ok(())
     }
 
+    /// Register a watermark engine processor
+    pub fn register_watermark_engine(&mut self) -> Result<()> {
+        let watermark_engine = Arc::new(crate::watermark_engine::WatermarkEngine::new());
+        self.processors.insert(ProcessorType::WatermarkEngine, watermark_engine);
+        info!("Registered WatermarkEngine processor");
+        Ok(())
+    }
+
     /// Get all registered processor types
     pub fn get_registered_processors(&self) -> Vec<ProcessorType> {
         self.processors.keys().cloned().collect()
@@ -275,6 +283,11 @@ impl ProcessingOrchestrator {
         
         // Try to register FormatConverter
         if self.register_format_converter().is_ok() {
+            count += 1;
+        }
+        
+        // Try to register WatermarkEngine
+        if self.register_watermark_engine().is_ok() {
             count += 1;
         }
         

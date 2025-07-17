@@ -13,6 +13,7 @@ pub mod models;
 pub mod processing;
 pub mod progress;
 pub mod queue;
+pub mod watermark_engine;
 pub mod utils;
 
 // Re-export commonly used types
