@@ -29,6 +29,49 @@ pub enum ProcessingBackend {
     LibVips,
 }
 
+/// Comprehensive quality and compression settings for different formats
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompressionSettings {
+    /// Quality setting (0-100) for lossy formats
+    pub quality: Option<u8>,
+    /// Compression level for PNG (0-9, where 9 is maximum compression)
+    pub png_compression: Option<u8>,
+    /// Whether to use progressive encoding for JPEG
+    pub progressive: bool,
+    /// Whether to optimize Huffman tables for JPEG
+    pub optimize_coding: bool,
+    /// Whether to use lossless compression for WebP
+    pub webp_lossless: bool,
+    /// TIFF compression method
+    pub tiff_compression: TiffCompression,
+}
+
+/// TIFF compression methods
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TiffCompression {
+    /// No compression
+    None,
+    /// LZW compression
+    Lzw,
+    /// JPEG compression (lossy)
+    Jpeg,
+    /// ZIP/Deflate compression
+    Zip,
+}
+
+impl Default for CompressionSettings {
+    fn default() -> Self {
+        Self {
+            quality: None, // Use format defaults
+            png_compression: Some(6), // Balanced compression
+            progressive: true, // Enable progressive JPEG
+            optimize_coding: true, // Optimize JPEG Huffman tables
+            webp_lossless: false, // Use lossy WebP by default
+            tiff_compression: TiffCompression::Lzw, // Use LZW for TIFF
+        }
+    }
+}
+
 /// Format converter using the image crate for high-performance image processing
 #[derive(Debug)]
 pub struct FormatConverter {
@@ -202,6 +245,86 @@ impl FormatConverter {
         Ok(())
     }
 
+    /// Get PNG compression level range (0-9)
+    pub fn get_png_compression_range() -> (u8, u8) {
+        (0, 9)
+    }
+
+    /// Validate PNG compression level
+    pub fn validate_png_compression(compression: u8) -> Result<()> {
+        let (min, max) = Self::get_png_compression_range();
+        if compression < min || compression > max {
+            return Err(ProcessingError::InvalidInput {
+                message: format!(
+                    "PNG compression {} is out of range (valid range: {}-{})",
+                    compression, min, max
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Create compression settings for a specific format with quality
+    pub fn create_compression_settings(format: ImageFormat, quality: Option<u8>) -> CompressionSettings {
+        let mut settings = CompressionSettings::default();
+        
+        // Set quality if provided and validate it
+        if let Some(q) = quality {
+            if Self::validate_quality(format, q).is_ok() {
+                settings.quality = Some(q);
+            }
+        } else {
+            settings.quality = Self::get_default_quality(format);
+        }
+        
+        // Format-specific optimizations
+        match format {
+            ImageFormat::Jpeg => {
+                settings.progressive = true;
+                settings.optimize_coding = true;
+            }
+            ImageFormat::Png => {
+                // Convert quality to PNG compression level if quality is provided
+                if let Some(q) = settings.quality {
+                    // Higher quality = lower compression (inverse relationship)
+                    // Use safe arithmetic to prevent overflow
+                    let compression_level = if q >= 100 {
+                        0
+                    } else {
+                        // Use floating point for more accurate calculation, then round
+                        let float_compression = 9.0 - (q as f32 * 9.0 / 100.0);
+                        float_compression.round() as u8
+                    };
+                    settings.png_compression = Some(compression_level);
+                }
+            }
+            ImageFormat::WebP => {
+                settings.webp_lossless = settings.quality.map_or(false, |q| q >= 100);
+            }
+            ImageFormat::Tiff => {
+                settings.tiff_compression = TiffCompression::Lzw;
+            }
+            _ => {}
+        }
+        
+        settings
+    }
+
+    /// Validate compression settings for a format
+    pub fn validate_compression_settings(format: ImageFormat, settings: &CompressionSettings) -> Result<()> {
+        // Validate quality if set
+        if let Some(quality) = settings.quality {
+            Self::validate_quality(format, quality)?;
+        }
+        
+        // Validate PNG compression if set
+        if let Some(compression) = settings.png_compression {
+            Self::validate_png_compression(compression)?;
+        }
+        
+        Ok(())
+    }
+
     /// Convert our ImageFormat enum to the image crate's ImageFormat
     fn to_image_crate_format(format: ImageFormat) -> Option<ImageCrateFormat> {
         match format {
@@ -249,7 +372,20 @@ impl FormatConverter {
         format: ImageFormat,
         quality: Option<u8>,
     ) -> Result<u64> {
+        // Create compression settings for the format
+        let settings = Self::create_compression_settings(format, quality);
+        Self::save_image_with_settings(image, path, format, &settings).await
+    }
+
+    /// Save an image to file with comprehensive compression settings
+    async fn save_image_with_settings(
+        image: DynamicImage,
+        path: &Path,
+        format: ImageFormat,
+        settings: &CompressionSettings,
+    ) -> Result<u64> {
         let path = path.to_path_buf();
+        let settings = settings.clone();
         
         task::spawn_blocking(move || {
             debug!("Saving image to: {} (format: {:?})", path.display(), format);
@@ -274,10 +410,10 @@ impl FormatConverter {
             
             let mut writer = BufWriter::new(file);
             
-            // Handle format-specific encoding options
+            // Handle format-specific encoding options using comprehensive settings
             match format {
                 ImageFormat::Jpeg => {
-                    let quality = quality.unwrap_or(85);
+                    let quality = settings.quality.unwrap_or(85);
                     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, quality);
                     image.write_with_encoder(encoder)
                         .map_err(|e| ProcessingError::ProcessingFailed {
@@ -290,17 +426,16 @@ impl FormatConverter {
                     })?;
                 }
                 ImageFormat::WebP => {
-                    let quality = quality.unwrap_or(80) as f32;
-                    if quality < 100.0 {
-                        // For lossy WebP, we need to use a different approach
-                        // The image crate doesn't support lossy WebP encoding directly
-                        // So we'll save as lossless for now
+                    if settings.webp_lossless {
                         let encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut writer);
                         image.write_with_encoder(encoder)
                             .map_err(|e| ProcessingError::ProcessingFailed {
-                                message: format!("Failed to encode WebP: {}", e),
+                                message: format!("Failed to encode lossless WebP: {}", e),
                             })?;
                     } else {
+                        // For lossy WebP, we need to use a different approach
+                        // The image crate doesn't support lossy WebP encoding directly
+                        // So we'll save as lossless for now
                         let encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut writer);
                         image.write_with_encoder(encoder)
                             .map_err(|e| ProcessingError::ProcessingFailed {

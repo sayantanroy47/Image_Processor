@@ -289,6 +289,39 @@ async fn test_format_converter_utility_functions() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_compression_settings() -> Result<()> {
+    // Test PNG compression range
+    assert_eq!(FormatConverter::get_png_compression_range(), (0, 9));
+    
+    // Test PNG compression validation
+    assert!(FormatConverter::validate_png_compression(5).is_ok());
+    assert!(FormatConverter::validate_png_compression(0).is_ok());
+    assert!(FormatConverter::validate_png_compression(9).is_ok());
+    assert!(FormatConverter::validate_png_compression(10).is_err());
+    
+    // Test compression settings creation
+    let jpeg_settings = FormatConverter::create_compression_settings(ImageFormat::Jpeg, Some(90));
+    assert_eq!(jpeg_settings.quality, Some(90));
+    assert!(jpeg_settings.progressive);
+    assert!(jpeg_settings.optimize_coding);
+    
+    let png_settings = FormatConverter::create_compression_settings(ImageFormat::Png, Some(80));
+    assert_eq!(png_settings.png_compression, Some(2)); // 9 - (80 * 9 / 100) = 9 - 7.2 = 1.8 -> rounds to 2
+    
+    let webp_settings = FormatConverter::create_compression_settings(ImageFormat::WebP, Some(100));
+    assert!(webp_settings.webp_lossless);
+    
+    let webp_lossy_settings = FormatConverter::create_compression_settings(ImageFormat::WebP, Some(80));
+    assert!(!webp_lossy_settings.webp_lossless);
+    
+    // Test compression settings validation
+    assert!(FormatConverter::validate_compression_settings(ImageFormat::Jpeg, &jpeg_settings).is_ok());
+    assert!(FormatConverter::validate_compression_settings(ImageFormat::Png, &png_settings).is_ok());
+    
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_orchestrator_processor_validation() -> Result<()> {
     let orchestrator = ProcessingOrchestrator::new();
     let converter = FormatConverter::new()?;
