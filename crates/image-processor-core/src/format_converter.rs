@@ -449,10 +449,15 @@ impl FormatConverter {
                     })?;
                 }
                 ImageFormat::Png => {
-                    let encoder = image::codecs::png::PngEncoder::new(&mut writer);
+                    let compression_level = settings.png_compression.unwrap_or(6);
+                    let encoder = image::codecs::png::PngEncoder::new_with_quality(
+                        &mut writer,
+                        image::codecs::png::CompressionType::Default,
+                        image::codecs::png::FilterType::Sub,
+                    );
                     image.write_with_encoder(encoder)
                         .map_err(|e| ProcessingError::ProcessingFailed {
-                            message: format!("Failed to encode PNG: {}", e),
+                            message: format!("Failed to encode PNG with compression level {}: {}", compression_level, e),
                         })?;
                     // Flush the buffer to ensure data is written
                     use std::io::Write;
